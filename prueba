@@ -1,238 +1,27 @@
-#! /bin/sh -e
-#
-# Copyright 2010
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301, USA.
+#!/bin/bash
 
-echo "Tenga en cuenta que para adicionar su maquina al dominio, la misma
-debe tener"
-echo "un nombre valido (obtenido con el comando hostname y almacenado en
-el fichero"
-echo "/etc/hostname) y unico en su Controlador de Dominios."
-echo "Ademas debe tener acceso a sus repositorios pues se instalaran las
-herramientas necesarias."
-echo "Presione enter para continuar."
-read ENTER
-echo "Introduzca su dominio, ejemplo, dominio.pdc.cu o pdc.cu"
-read DOMINIOSAMBA
-DOMINIOSAMBAMAY=`echo $DOMINIOSAMBA | tr '[:lower:]' '[:upper:]'`
-echo "Introduzca el ip de su controlador de dominio"
-read IP
-WORKGROUP=`echo $DOMINIOSAMBAMAY | cut -d . -f1`
-ID_USER=`id -u`
-SAMBA_CONF="/etc/samba/smb.conf"
-KRB_CONF="/etc/krb5.conf"
-WINBIND_CONF="/etc/nsswitch.conf"
-DATE="backup"
-HOSTNAME=`hostname`
-#¿Soy root?
-if [ $ID_USER != "0" ]
-then
-echo "El usuario no es root"
-exit 0
-fi
-#Configuración de hosts y resolv.conf
-cat > /etc/hosts << EOF
-127.0.0.1 $HOSTNAME.$DOMINIOSAMBA $HOSTNAME localhost
-EOF
-cat > /etc/resolv.conf << EOF
-nameserver $IP
-EOF
+for i in $(seq 1 500); do
+  uid="usuario$i"
+  cn="Usuario $i"
+  uidNumber=$((10000 + i))
+  gidNumber=10000
+  homeDir="/home/$uid"
+  password="contraseña$i"  # Genera contraseñas únicas para cada usuario
 
-apt-get install -y --allow-unauthenticated ntp samba-common-bin
-krb5-user krb5-config samba smbclient winbind libpam-modules
+  cat <<EOF > user$i.ldif
+dn: uid=$uid,ou=equipos,dc=techfix,dc=local
+objectClass: top
+objectClass: posixAccount
+objectClass: inetOrgPerson
+uid: $uid
+cn: $cn
+sn: Apellido$i
+uidNumber: $uidNumber
+gidNumber: $gidNumber
+homeDirectory: $homeDir
+userPassword: {SSHA}$(slappasswd -s $password)
+  EOF
 
-cat > /etc/ntp.conf << EOF
-driftfile /var/lib/ntp/ntp.drift
-statistics loopstats peerstats clockstats
-filegen loopstats file loopstats type day enable
-filegen peerstats file peerstats type day enable
-filegen clockstats file clockstats type day enable
-server $DOMINIOSAMBA
-restrict -4 default kod notrap nomodify nopeer noquery
-restrict -6 default kod notrap nomodify nopeer noquery
-restrict 127.0.0.1
-restrict ::1
-EOF
-/etc/init.d/ntp restart
-#Salva de configuración de ficheros de samba
-if [ -e $SAMBA_CONF ]
-then
-echo "Se crea un fichero de backup para $SAMBA_CONF con el nombre:
-$SAMBA_CONF.${DATE}"
-cp -a $SAMBA_CONF $SAMBA_CONF.${DATE}
+ldapadd -x -D cn=admin,dc=techfix,dc=local -W -f user$i.ldif
 
-cat > /etc/samba/smb.conf << EOF
-
-[global]
-security = ADS
-netbios name = <NOMBRE_NETBIOS>
-realm = $DOMINIOSAMBAMAY
-password server = $DOMINIOSAMBA
-workgroup = $WORKGROUP
-log level = 1
-syslog = 0
-idmap uid = 10000-29999
-idmap gid = 10000-29999
-winbind separator = +
-winbind enum users = yes
-winbind enum groups = yes
-winbind use default domain = yes
-template homedir = /home/%D/%U
-template shell = /bin/bash
-client use spnego = yes
-domain master = no
-server string = debian data server
-encrypt passwords = yes
-
-#[recurso]
-# comment = Ejemplo de directorio compartido
-# path = /home
-# available = yes
-# browseable = yes
-# writable = no
-# valid users = $WORKGROUP+usuario
-
-
-EOF
-
-else
-echo "No se encuentra el fichero $SAMBA_CONF. Pruebe: {Debian/ubuntu}
-aptitude install samba smbclient"
-exit 128
-fi
-
-if [ -e $KRB_CONF ]
-then
-echo "Se crea un fichero de backup para $KRB_CONF con el nombre:
-$KRB_CONF.${DATE}"
-cp -a $KRB_CONF $KRB_CONF.${DATE}
-
-cat > /etc/krb5.conf << EOF
-
-[libdefaults]
-default_realm = $DOMINIOSAMBAMAY
-clocksknew = 300
-# The following krb5.conf variables are only for MIT Kerberos.
-krb4_config = /etc/krb.conf
-krb4_realms = /etc/krb.realms
-kdc_timesync = 1
-ccache_type = 4
-forwardable = true
-proxiable = true
-
-v4_instance_resolve = false
-v4_name_convert = {
-host = {
-rcmd = host
-ftp = ftp
-}
-plain = {
-something = something-else
-}
-}
-fcc-mit-ticketflags = true
-
-[realms]
-$DOMINIOSAMBAMAY = {
-kdc = $IP
-default_domain = $DOMINIOSAMBA
-admin_server = $IP
-}
-$DOMINIOSAMBA = {
-kdc = $IP
-default_domain = $DOMINIOSAMBA
-admin_server = $IP
-}
-$WORKGROUP = {
-kdc = $IP
-default_domain = $WORKGROUP
-admin_server = $IP
-}
-
-
-[domain_realm]
-.$WORKGROUP = $WORKGROUP
-.$DOMINIOSAMBA = $DOMINIOSAMBAMAY
-
-[login]
-krb4_convert = true
-krb4_get_tickets = false
-
-[appdefaults]
-pam = {
-ticket_lifetime = 1d
-renew_lifetime = 1d
-forwadable = true
-proxiable = false
-retain_after_close = false
-minimun_uid = 0
-try_first_pass = true
-}
-
-EOF
-
-else
-echo "No se encuentra el fichero $KRB_CONF. Pruebe: {Debian/ubuntu}
-aptitude install krb5-user krb5-config"
-exit 128
-fi
-
-if [ -e $WINBIND_CONF ]
-then
-echo "Se crea un fichero de backup para $WINBIND_CONF con el nombre:
-$WINBIND_CONF.${DATE}"
-mv $WINBIND_CONF $WINBIND_CONF.${DATE}
-
-cat > /etc/nsswitch.conf << EOF
-passwd: files winbind
-group: files winbind
-shadow: files winbind
-hosts: files dns winbind
-networks: files
-protocols: db files
-services: db files
-ethers: db files
-rpc: db files
-netgroup: nis
-EOF
-
-else
-echo "No se encuentra el fichero $WINBIND_CONF. Pruebe:
-{Debian/ubuntu}aptitude install winbind"
-exit 128
-fi
-echo "session required pam_mkhomedir.so umask=0022
-skel=/etc/skel" >> /etc/pam.d/common-session
-#Modificar
-sed -i -e "s/<NOMBRE_NETBIOS>/$HOSTNAME/" $SAMBA_CONF
-#Reiniciar Servicios
-service smbd restart
-/etc/init.d/winbind restart
-#Pedir ticket kerberos
-echo "Introduzca un usuario del dominio con permisos para adicionar su
-computadora al mismo:"
-read USERNAME
-echo "Obteniendo ticket de kerberos"
-kinit $USERNAME@$DOMINIOSAMBAMAY
-#Unir al dominio
-echo "Añadiendo PC al dominio..."
-net ads join -S $DOMINIOSAMBA -U $USERNAME
-#Mostrar comprobaciones
-net ads info
-/etc/init.d/winbind restart
-echo "Terminado"
-exit 0
+done
